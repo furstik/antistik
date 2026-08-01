@@ -189,7 +189,7 @@ async def process_chat_sticker(message: Message):
 
         link = f"https://t.me/addstickers/{target_name}"
         if is_manual:
-            text = f"🛡 Этот стикерпак был заменен администратором на безопасный аналог:\n👉 {link}"
+            text = f"🛡 Этот стикерпак имеется в канале @FurriStik \n👉 {link}"
         else:
             text = f"✅ Стикерпак очищен от рекламы и доступен по ссылке:\n👉 {link}"
 
