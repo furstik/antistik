@@ -3,6 +3,7 @@ import re
 import uuid
 import sqlite3
 import asyncio
+import time
 from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, F
@@ -28,6 +29,7 @@ processing_packs = set()
 # Хранение ID последних отправленных ссылок: {(chat_id, original_pack_name): message_id}
 last_bot_messages = {}
 
+user_copy_timestamps = {}
 
 # --- База данных SQLite ---
 def init_db():
@@ -154,33 +156,27 @@ async def process_chat_sticker(message: Message):
     if not pack_name:
         return  # Это одиночный стикер-картинка, игнорируем
 
-    # --- ДОБАВЛЕНО: Проверка на "чистый" пак ---
     # Если это уже наш клон или ручная замена — просто разрешаем его и ничего не делаем
     if is_target_pack(pack_name):
         return
-    # -------------------------------------------
 
     chat_id = message.chat.id
-
-
+    user_id = message.from_user.id  # <-- ДОБАВЛЕНО: получаем ID пользователя
 
     # Вспомогательная локальная функция для отправки ссылки с удалением предыдущей
     async def send_and_cleanup_link(text: str):
-        # Удаляем предыдущее сообщение бота с этой же ссылкой в этом чате
         if (chat_id, pack_name) in last_bot_messages:
             try:
                 await bot.delete_message(chat_id, last_bot_messages[(chat_id, pack_name)])
             except Exception:
-                pass # Сообщение могло быть уже удалено пользователем/админом
-
-        # Отправляем новое и сохраняем его ID
+                pass
         sent_msg = await message.answer(text, disable_web_page_preview=True)
         last_bot_messages[(chat_id, pack_name)] = sent_msg.message_id
-
 
     # 1. Проверяем в БД (если пак уже скопирован ранее)
     mapping = get_pack_mapping(pack_name)
     if mapping:
+        # ... (существующий код, который удаляет стикер и отправляет ссылку)
         target_name, is_manual = mapping
         try:
             await message.delete()
@@ -189,25 +185,51 @@ async def process_chat_sticker(message: Message):
 
         link = f"https://t.me/addstickers/{target_name}"
         if is_manual:
-            text = f"🛡 Этот стикерпак имеется в канале @FurriStik \n👉 {link}"
+            text = f"🛡 Этот стикерпак был заменен администратором на безопасный аналог:\n👉 {link}"
         else:
             text = f"✅ Стикерпак очищен от рекламы и доступен по ссылке:\n👉 {link}"
 
         await send_and_cleanup_link(text)
-        return
+        return  # <-- Лимит не тратится, если пак уже есть в БД
 
-    # 2. ЗАЩИТА ОТ ГОНКИ: Если пак прямо сейчас копируется соседним процессом
+    # 2. ЗАЩИТА ОТ ГОНКИ: Если пак прямо сейчас копируется
     if pack_name in processing_packs:
         try:
-            await message.delete() # Просто удаляем стикер
+            await message.delete()
         except Exception:
             pass
-        return  # Ничего не делаем, ждем пока первый процесс закончит и выдаст ссылку
+        return
 
     # 3. Проверка на игнор-слова
     original_set = await bot.get_sticker_set(pack_name)
     if any(word in original_set.title.lower() for word in IGNORE_WORDS):
-        return  # Игнорируем (не удаляем и не копируем)
+        return
+
+
+    # --- ДОБАВЛЕНО: ПРОВЕРКА ЛИМИТА (НЕ БОЛЕЕ 2 ПАКОВ ЗА 3 МИНУТЫ) ---
+    current_time = time.time()
+    
+    # Очищаем старые записи для этого пользователя (старше 180 секунд)
+    if user_id in user_copy_timestamps:
+        user_copy_timestamps[user_id] = [
+            t for t in user_copy_timestamps[user_id] 
+            if current_time - t < 180
+        ]
+    else:
+        user_copy_timestamps[user_id] = []
+
+    # Если за последние 3 минуты уже было 2 или более попыток копирования
+    if len(user_copy_timestamps[user_id]) >= 2:
+        try:
+            await message.delete() # Тихо удаляем стикер
+        except Exception:
+            pass
+        return  # Прерываем работу, не копируем и ничего не пишем в чат
+        
+    # Если проверки пройдены успешно, записываем время этого запроса
+    user_copy_timestamps[user_id].append(current_time)
+    # -----------------------------------------------------------------
+
 
     # 4. Пройдены все проверки: начинаем процесс копирования
     try:
@@ -215,8 +237,8 @@ async def process_chat_sticker(message: Message):
     except Exception:
         pass
 
-    # Блокируем пак, чтобы другие стикеры из него не запустили копирование
     processing_packs.add(pack_name)
+
 
     try:
         new_pack_name = await fast_copy_pack(pack_name)
