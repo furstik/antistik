@@ -54,10 +54,14 @@ async def download_db_from_yadisk():
                 print("✅ [Yandex Disk] Актуальная БД 'stickers.db' успешно загружена с облака.")
             else:
                 print("⚠️ [Yandex Disk] Резервная копия не найдена. Будет создана новая локальная БД.")
+            
+            return True # Возвращаем True (успех)
         else:
             print("❌ [Yandex Disk] Неверный токен Яндекс Диска!")
+            return False # Возвращаем False (провал)
     except Exception as e:
         print(f"❌ [Yandex Disk] Ошибка при стартовой загрузке БД: {e}")
+        return False # Возвращаем False (провал)
 
 async def upload_db_to_yadisk():
     """Загружает локальную базу на Яндекс Диск (перезаписывает)."""
@@ -392,10 +396,16 @@ async def cancel_auto_link(callback: CallbackQuery):
 
 # --- Запуск ---
 async def main():
-    # 1. Скачиваем актуальную БД с облака ПЕРЕД инициализацией БД и запуском бота
-    await download_db_from_yadisk()
+    # 1. Пытаемся скачать БД
+    download_success = await download_db_from_yadisk()
     
-    # 2. Инициализируем локальную (возможно, только что скачанную) БД
+    # Если скачать не удалось (ошибка сети или токена) - убиваем процесс, чтобы не затереть облако пустой базой!
+    if not download_success:
+        print("🚨 КРИТИЧЕСКАЯ ОШИБКА: Не удалось получить базу с Яндекс Диска! Запуск бота отменен для сохранения данных.")
+        await y.close()
+        return # Выход, бот не включится
+        
+    # 2. Если все отлично, открываем БД
     init_db()
     
     print("Бот успешно запущен!")
@@ -404,8 +414,6 @@ async def main():
     try:
         await dp.start_polling(bot)
     finally:
-        # Важно закрывать клиентское подключение при выключении бота
         await y.close()
-
 if __name__ == "__main__":
     asyncio.run(main())
